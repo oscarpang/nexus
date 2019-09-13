@@ -59,10 +59,10 @@ CXXFLAGS = -std=c++11 -O3 -fPIC $(WARNING) -Isrc -Ibuild/gen $(shell pkg-config 
 CXXFLAGS += -MMD -MP
 LD_FLAGS = -lm -pthread -lglog -lgflags -lgtest -lgtest_main \
 	-lboost_system -lboost_thread -lboost_filesystem -lyaml-cpp \
-	$(shell pkg-config --libs protobuf grpc++ grpc opencv)
+	$(shell pkg-config --libs protobuf grpc++ grpc opencv4)
 DLL_LINK_FLAGS = -shared
 ifeq ($(USE_GPU), 1)
-	CXXFLAGS += -I$(CUDA_PATH)/include
+	CXXFLAGS += -DUSE_GPU -I$(CUDA_PATH)/include
 	LD_FLAGS += -L$(CUDA_PATH)/lib64 -lcuda -lcudart -lcurand
 endif
 
