@@ -37,51 +37,123 @@ TensorflowModel::TensorflowModel(int gpu_id, const ModelInstanceConfig& config):
 //  }
   (*cpu_option_.config.mutable_device_count())["GPU"] = 0;
 
-  // Init session and load model
-  session_.reset(tf::NewSession(gpu_option_));
+  tf::Status status;
   fs::path model_dir = fs::path(model_info_["model_dir"].as<std::string>());
   fs::path model_file = model_dir / model_info_["model_file"].as<std::string>();
-  CHECK(fs::exists(model_file)) << "model file " << model_file <<
-      " doesn't exist";
-  tf::GraphDef graph_def;
-  tf::Status status;
-  status = tf::ReadBinaryProto(gpu_option_.env, model_file.string(),
-                               &graph_def);
-  if (!status.ok()) {
-    LOG(FATAL) << "Failed to load model " << model_file << " : " <<
+//  if (model_info_["model_file"].as<std::string>().find("tensorflow/ssd_vgg") != std::string::npos) {
+  if (model_name() == "ssd_vgg" || model_name() == "actdet_reid" || model_name() == "obj_det_tf") {
+    // tf::SessionOptions session_options;
+    tf::RunOptions run_options;
+    // session_options.config.set_allocated_gpu_options(gpu_opt);
+
+    LOG(INFO) << "Load tf serving model from " << model_info_["model_file"].as<std::string>();
+    status = tf::LoadSavedModel(gpu_option_, run_options, model_file.string(),  {"serve"}, &saved_model_bundle_);
+    if (!status.ok()) {
+      LOG(FATAL) << "Failed to load model " << model_file << " : " <<
         status.ToString();
-  }
-  status = session_->Create(graph_def);
-  if (!status.ok()) {
-    LOG(FATAL) << "Failed to add graph to session: " << status.ToString();
+    }
+
+    if(model_name() == "obj_det_tf") {
+      signature_key_ = "serving_default";
+    } else if(model_name() == "actdet_reid") {
+      signature_key_ = "predict_images";
+    }
+  } else {
+    // Init session and load model
+    session_.reset(tf::NewSession(gpu_option_));
+//    fs::path model_dir = fs::path(model_info_["model_dir"].as<std::string>());
+//    fs::path model_file = model_dir / model_info_["model_file"].as<std::string>();
+    CHECK(fs::exists(model_file)) << "model file " << model_file <<
+        " doesn't exist";
+    tf::GraphDef graph_def;
+  //  tf::Status status;
+    status = tf::ReadBinaryProto(gpu_option_.env, model_file.string(),
+                                 &graph_def);
+    if (!status.ok()) {
+      LOG(FATAL) << "Failed to load model " << model_file << " : " <<
+          status.ToString();
+    }
+    status = session_->Create(graph_def);
+    if (!status.ok()) {
+      LOG(FATAL) << "Failed to add graph to session: " << status.ToString();
+    }
+
   }
 
+
   // Get the input and output shape
-  if (model_session_.image_height() > 0) {
-    image_height_ = model_session_.image_height();
-    image_width_ = model_session_.image_width();
+  if (model_info_["model_file"].as<std::string>().find("tensorflow/ssd_vgg") != std::string::npos) {
+    image_height_ = 1080;
+    image_width_ = 1920;
   } else {
-    image_height_ = model_info_["image_height"].as<int>();
-    image_width_ = model_info_["image_width"].as<int>();
+    if (model_session_.image_height() > 0) {
+      image_height_ = model_session_.image_height();
+      image_width_ = model_session_.image_width();
+    } else {
+      image_height_ = model_info_["image_height"].as<int>();
+      image_width_ = model_info_["image_width"].as<int>();
+    }
   }
   // Tensorflow uses NHWC by default. More details see
   // https://www.tensorflow.org/versions/master/performance/performance_guide
-  input_shape_.set_dims({static_cast<int>(max_batch_), image_height_, image_width_, 3});
-  input_size_ = input_shape_.NumElements(1);
-  input_layer_ = model_info_["input_layer"].as<std::string>();
+  if(model_name() == "ssd_vgg") {
+    input_shape_.set_dims({image_height_, image_width_, 3});
+    input_size_ = input_shape_.NumElements(0);
+  } else {
+    input_shape_.set_dims({max_batch_,image_height_, image_width_, 3});
+    input_size_ = input_shape_.NumElements(1);
+  }
+  if (saved_model_bundle_.session) {
+    const auto& meta_graph_def = saved_model_bundle_.meta_graph_def;
 
-  if (model_info_["output_layer"].IsSequence()) {
-    for (size_t i = 0; i < model_info_["output_layer"].size(); ++i) {
-      output_layers_.push_back(model_info_["output_layer"][i].as<std::string>());
+    auto iter = meta_graph_def.signature_def().find(signature_key_);
+
+    if (iter == meta_graph_def.signature_def().end()) {
+      LOG(FATAL) << "cannot find " << signature_key_ <<" in signature_def";
+    }
+    const tf::SignatureDef& signature = iter->second;
+    
+    size_t input_count = 0;
+    for (const auto& pair : signature.inputs()) {
+      input_layer_ = pair.second.name(); 
+      input_count++;
+      CHECK_LE(input_count, 1) << "Only support one input for now";
     }
   } else {
-    output_layers_.push_back(model_info_["output_layer"].as<std::string>());
+    input_layer_ = model_info_["input_layer"].as<std::string>();
+  }
+
+  if (saved_model_bundle_.session) {  
+    const auto& meta_graph_def = saved_model_bundle_.meta_graph_def;
+
+    auto iter = meta_graph_def.signature_def().find(signature_key_);
+    if (iter == meta_graph_def.signature_def().end()) {
+      LOG(FATAL) << "cannot find " << signature_key_ <<" in signature_def";
+    }
+    const tf::SignatureDef& signature = iter->second;
+
+    for (const auto& pair : signature.outputs()) {
+      LOG(INFO) << "Add output: " << pair.second.name();
+      output_layers_.emplace_back(pair.second.name());
+    }    
+  } else {
+    if (model_info_["output_layer"].IsSequence()) {
+      for (size_t i = 0; i < model_info_["output_layer"].size(); ++i) {
+        output_layers_.push_back(model_info_["output_layer"][i].as<std::string>());
+      }
+    } else {
+      output_layers_.push_back(model_info_["output_layer"].as<std::string>());
+    }
   }
   LOG(INFO) << "Model " << model_session_id_ << ", input: " <<
       input_layer_ << ", shape: " << input_shape_ << " (" << input_size_ <<
       ")";
 
-  if (model_name() == "ssd_mobilenet" || model_name() == "ssd_mobilenet_0.75") {
+  if (model_name() == "ssd_mobilenet" || 
+    model_name() == "ssd_mobilenet_0.75" || 
+    model_name() == "ssd_vgg" || 
+    model_name() == "actdet_reid" ||
+    model_name() == "obj_det_tf") {
     input_data_type_ = DT_UINT8;
   } else {
     input_data_type_ = DT_FLOAT;
@@ -111,7 +183,12 @@ TensorflowModel::TensorflowModel(int gpu_id, const ModelInstanceConfig& config):
     inputs.emplace_back(slice_beg_vector, slice_beg_tensor_->Slice(0, num_suffixes_));
     inputs.emplace_back(slice_end_vector, slice_end_tensor_->Slice(0, num_suffixes_));
   }
-  status = session_->Run(inputs, output_layers_, {}, &out_tensors);
+  if (saved_model_bundle_.session) {
+    LOG(INFO) << "input tensor shape: " << inputs[0].second.shape();
+    status = saved_model_bundle_.session->Run(inputs, output_layers_, {}, &out_tensors);
+  } else {
+    status = session_->Run(inputs, output_layers_, {}, &out_tensors);
+  }
   if (!status.ok()) {
     LOG(FATAL) << "Failed to run " << model_session_id_ << ": " <<
         status.ToString();
@@ -155,10 +232,15 @@ TensorflowModel::TensorflowModel(int gpu_id, const ModelInstanceConfig& config):
                         as<std::string>();
     LoadClassnames(cns_path.string(), &classnames_);
   }
+  LOG(INFO) << "Finished constructor";
 }
 
 TensorflowModel::~TensorflowModel() {
-  session_->Close();
+  if (saved_model_bundle_.session) {
+    saved_model_bundle_.session->Close();
+  } else {
+    session_->Close();
+  }
 }
 
 Shape TensorflowModel::InputShape() {
@@ -179,6 +261,7 @@ ArrayPtr TensorflowModel::CreateInputGpuArray() {
   }
   char* gpu_data = const_cast<char*>(tensor->tensor_data().data());
   size_t nbytes = tensor->NumElements() * type_size(input_data_type_);
+  //LOG(INFO) << "CreateInputGpuArray: nbytes = " << nbytes; 
   auto buf = std::make_shared<Buffer>(gpu_data, nbytes, gpu_device_);
   auto arr = std::make_shared<Array>(input_data_type_, tensor->NumElements(),
                                      buf);
@@ -218,7 +301,11 @@ void TensorflowModel::Preprocess(std::shared_ptr<Task> task) {
   };
 
   std::function<void(cv::Mat&)> prepare_image;
-  if (model_name() == "ssd_mobilenet" || model_name() == "ssd_mobilenet_0.75") {
+  if (model_name() == "ssd_mobilenet" || 
+    model_name() == "ssd_mobilenet_0.75" || 
+    model_name() == "ssd_vgg" ||
+     model_name() == "actdet_reid" ||
+      model_name() == "obj_det_tf") {
     prepare_image = prepare_image_ssd;
   } else {
     prepare_image = prepare_image_default;
@@ -255,10 +342,17 @@ void TensorflowModel::Preprocess(std::shared_ptr<Task> task) {
 void TensorflowModel::Forward(std::shared_ptr<BatchTask> batch_task) {
   size_t batch_size = batch_task->batch_size();
   auto in_tensor = input_tensors_[batch_task->GetInputArray()->tag()]->Slice(
-      0, batch_size);
+     0, batch_size);
+  // LOG(INFO) << "Forward: in_tensor shape: " << in_tensor.shape();
   std::vector<tf::Tensor> out_tensors;
-  tf::Status status = session_->Run({{input_layer_, in_tensor}},
-                                    output_layers_, {}, &out_tensors);
+  tf::Status status;
+  if (saved_model_bundle_.session) {
+    status = saved_model_bundle_.session->Run({{input_layer_, in_tensor}},
+                                        output_layers_, {}, &out_tensors);
+  } else {
+    status = session_->Run({{input_layer_, in_tensor}},
+                                        output_layers_, {}, &out_tensors);
+  }
   if (!status.ok()) {
     LOG(ERROR) << "Failed to run tensorflow: " << status.ToString();
     return;
@@ -267,11 +361,14 @@ void TensorflowModel::Forward(std::shared_ptr<BatchTask> batch_task) {
   for (uint i = 0; i < output_layers_.size(); ++i) {
     const auto& name = output_layers_[i];
     const char* tensor_data = out_tensors[i].tensor_data().data();
+    //LOG(INFO) << "tensor data type: " << tf::DataTypeString(out_tensors[i].dtype()) << " total bytes " << out_tensors[i].TotalBytes();
     size_t nfloats = out_tensors[i].NumElements();
+
     auto out_arr = batch_task->GetOutputArray(name);
     float* out_data = out_arr->Data<float>();
     Memcpy(out_data, cpu_device_, tensor_data, cpu_device_,
            nfloats * sizeof(float));
+//    LOG(INFO) << "name: " << name << " batch size: " << batch_size << " output_sizes: " << output_sizes_.at(name);
     slices.emplace(name, Slice(batch_size, output_sizes_.at(name)));
   }
   batch_task->SliceOutputBatch(slices);
@@ -281,28 +378,48 @@ void TensorflowModel::Postprocess(std::shared_ptr<Task> task) {
   const QueryProto& query = task->query;
   QueryResultProto* result = &task->result;
   result->set_status(CTRL_OK);
-  for (auto output : task->outputs) {
-    if (type() == "classification") {
-      auto out_arr = output->arrays.at(output_layers_[0]);
-      float* out_data = out_arr->Data<float>();
-      size_t count = out_arr->num_elements();
-      size_t output_size = output_sizes_.at(output_layers_[0]);
-      if (classnames_.empty()) {
-        PostprocessClassification(query, out_data, output_size, result);
-      } else {
-        PostprocessClassification(query, out_data, output_size, result,
-                                  &classnames_);
+
+  if (model_name() == "ssd_vgg" || model_name() == "actdet_reid" || model_name() == "obj_det_tf") {
+    auto record = result->add_output();
+    for (auto output : task->outputs) {
+      for (auto pair : output->arrays) {
+        auto out_arr = pair.second;
+        float* out_data = out_arr->Data<float>();
+        size_t count = out_arr->num_elements();
+
+        auto value = record->add_named_value();
+        value->set_name(pair.first);
+        value->set_data_type(DT_TENSOR);
+        auto tensor = value->mutable_tensor();
+        for (size_t idx = 0; idx < count; idx++) {
+          tensor->add_floats(out_data[idx]);
+        }
       }
-    } else if (type() == "detection") {
-      int im_height = task->attrs["im_height"].as<int>();
-      int im_width = task->attrs["im_width"].as<int>();
-      MarshalDetectionResult(query, output, im_height, im_width, result);
-    } else {
-      std::ostringstream oss;
-      oss << "Unsupported model type " << type() << " for " << framework();
-      result->set_status(MODEL_TYPE_NOT_SUPPORT);
-      result->set_error_message(oss.str());
-      break;
+    }
+  } else {
+    for (auto output : task->outputs) {
+      if (type() == "classification") {
+        auto out_arr = output->arrays.at(output_layers_[0]);
+        float* out_data = out_arr->Data<float>();
+        size_t count = out_arr->num_elements();
+        size_t output_size = output_sizes_.at(output_layers_[0]);
+        if (classnames_.empty()) {
+          PostprocessClassification(query, out_data, output_size, result);
+        } else {
+          PostprocessClassification(query, out_data, output_size, result,
+                                    &classnames_);
+        }
+      } else if (type() == "detection") {
+        int im_height = task->attrs["im_height"].as<int>();
+        int im_width = task->attrs["im_width"].as<int>();
+        MarshalDetectionResult(query, output, im_height, im_width, result);
+      } else {
+        std::ostringstream oss;
+        oss << "Unsupported model type " << type() << " for " << framework();
+        result->set_status(MODEL_TYPE_NOT_SUPPORT);
+        result->set_error_message(oss.str());
+        break;
+      }
     }
   }
 }

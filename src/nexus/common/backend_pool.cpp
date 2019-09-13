@@ -7,7 +7,7 @@
 namespace nexus {
 
 BackendSession::BackendSession(const BackendInfo& info,
-                               boost::asio::io_context& io_context,
+                               boost::asio::io_service& io_context,
                                MessageHandler* handler):
     Connection(io_context, handler),
     io_context_(io_context),

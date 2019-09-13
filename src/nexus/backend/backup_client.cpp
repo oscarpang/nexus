@@ -6,7 +6,7 @@ namespace nexus {
 namespace backend {
 
 BackupClient::BackupClient(const BackendInfo& info,
-                           boost::asio::io_context& io_context,
+                           boost::asio::io_service& io_context,
                            MessageHandler* handler) :
     BackendSession(info, io_context, handler) {}
 

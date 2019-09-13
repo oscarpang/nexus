@@ -13,7 +13,7 @@ Connection::Connection(boost::asio::ip::tcp::socket socket,
   socket_.set_option(option);
 }
 
-Connection::Connection(boost::asio::io_context& io_context,
+Connection::Connection(boost::asio::io_service& io_context,
                        MessageHandler* handler) :
     socket_(io_context),
     handler_(handler),

@@ -6,6 +6,8 @@
 #include "nexus/backend/model_ins.h"
 // Tensorflow headers
 #include "tensorflow/core/public/session.h"
+#include "tensorflow/cc/saved_model/loader.h"
+#include "tensorflow/contrib/session_bundle/signature.h"
 
 namespace tf = tensorflow;
 
@@ -67,6 +69,9 @@ class TensorflowModel : public ModelInstance {
   std::unique_ptr<tf::Tensor> slice_beg_tensor_;
   std::unique_ptr<tf::Tensor> slice_end_tensor_;
   void set_slice_tensor(const std::unique_ptr<tf::Tensor>& dst, const std::vector<int32_t> &src);
+
+  tf::SavedModelBundle saved_model_bundle_;
+  std::string signature_key_;
 };
 
 } // namespace backend

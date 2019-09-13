@@ -59,8 +59,11 @@ void BatchTask::AppendInput(std::shared_ptr<Input> input,
   inputs_.push_back(input);
   tasks_.push_back(task);
   auto in_arr = input->array;
+  // LOG(INFO) << "in_arr length: " << input->array->num_elements();
+  // LOG(INFO) << "input_array_ length: " << input_array_->num_elements();
   const char* src_data = in_arr->Data<char>();
   size_t nbytes = in_arr->num_elements() * type_size(input_array_->data_type());
+  // LOG(INFO) << "nbytes: " << nbytes;
   Memcpy(input_write_pt_, input_array_->device(), src_data, in_arr->device(),
          nbytes);
   input_write_pt_ += nbytes;
